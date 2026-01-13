@@ -2,8 +2,12 @@
 
 // server.js - UPDATED VERSION WITH PROPER AUTH
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const http = require('http');
 const socketIo = require('socket.io');
+
+const onlineStatusService = require('./services/OnlineStatusService');
+
 const cors = require('cors');
 require('dotenv').config();
 
@@ -33,6 +37,9 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json());
+
+// Apply socket authentication middleware
+io.use(socketAuth);
 
 // Test endpoints
 app.get('/', (req, res) => {
@@ -66,30 +73,107 @@ app.get('/socket-test', (req, res) => {
   });
 });
 
+
+
+// **** New Added - Limit socket connections
+const socketLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100, // 100 connection attempts per 15min
+  message: 'Too many connection attempts'
+});
+
+// **** New Added -  New added
+app.use('/socket-test', socketLimiter);
+
+// **** New Added - 
+app.get('/metrics', (req, res) => {
+  const onlineUsers = Array.from(onlineUsers.keys());
+  
+  res.json({
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    connections: io.engine.clientsCount,
+    onlineUsers: onlineUsers.length,
+    userList: onlineUsers
+  });
+});
+
+
 // ========== IMPORTANT: Apply socket authentication middleware ==========
 io.use(socketAuth);
 
-// ========== Socket.io connection handler ==========
+
+// Socket.io connection handler
 io.on('connection', (socket) => {
-  console.log(`🔗 Authenticated socket connection: ${socket.id}`);
-  console.log(`   User: ${socket.user?.username} (ID: ${socket.user?.id})`);
+  const userId = socket.user?.id;
   
-  // Send welcome message
-  socket.emit('welcome', {
-    message: 'Connected to chat server',
-    socketId: socket.id,
-    user: socket.user,
-    timestamp: new Date().toISOString()
-  });
+  if (userId) {
+    // Track user as online
+    const becameOnline = onlineStatusService.userConnected(userId, socket.id);
+    
+    if (becameOnline) {
+      // Notify friends that user came online
+      notifyFriendsOnlineStatus(userId, true);
+    }
+    
+    console.log(`🔗 User ${socket.user.username} (ID: ${userId}) connected`);
+    console.log(`   Total online users: ${onlineStatusService.getOnlineCount()}`);
+  }
+
+
+
+
+
+
   
-  // Initialize chat handler with authenticated socket
+  // Initialize chat handler
   chatHandler(io, socket);
   
-  // Handle errors
-  socket.on('error', (error) => {
-    console.error(`Socket ${socket.id} error:`, error);
+  // Handle disconnect
+  socket.on('disconnect', () => {
+    if (userId) {
+      // Track user as offline (if no more sockets)
+      const becameOffline = onlineStatusService.userDisconnected(userId, socket.id);
+      
+      if (becameOffline) {
+        // Notify friends that user went offline
+        notifyFriendsOnlineStatus(userId, false);
+      }
+      
+      console.log(`👋 User ${socket.user?.username} (ID: ${userId}) disconnected`);
+      console.log(`   Remaining online users: ${onlineStatusService.getOnlineCount()}`);
+    }
   });
 });
+
+// Helper function to notify friends (you'll implement this later)
+function notifyFriendsOnlineStatus(userId, isOnline) {
+  // Get user's friends from database
+  // For each friend who is online, send WebSocket event
+  console.log(`📢 User ${userId} is now ${isOnline ? 'online' : 'offline'}`);
+}
+
+// Add monitoring endpoint
+app.get('/online-users', (req, res) => {
+  res.json(onlineStatusService.getStats());
+});
+
+app.get('/online-users/:userId', (req, res) => {
+  const userId = parseInt(req.params.userId);
+  res.json({
+    userId,
+    isOnline: onlineStatusService.isUserOnline(userId),
+    lastSeen: onlineStatusService.getUserLastSeen(userId),
+    sockets: onlineStatusService.getUserSockets(userId)
+  });
+});
+
+
+
+
+
+
+
 
 
 
