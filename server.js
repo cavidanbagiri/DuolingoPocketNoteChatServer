@@ -63,7 +63,7 @@ app.get('/health', (req, res) => {
 
 app.get('/socket-test', (req, res) => {
   const clients = Array.from(io.sockets.sockets.keys());
-  
+
   res.json({
     server: 'WebSocket Server',
     status: 'running',
@@ -77,18 +77,18 @@ app.get('/socket-test', (req, res) => {
 app.post('/conversation-created', (req, res) => {
   try {
     const { conversationId, participantIds } = req.body;
-    
-    
+
+
     // Auto-join all online participants to the new conversation room
     participantIds.forEach(participantId => {
       const userSockets = Array.from(io.sockets.sockets.values()).filter(
         s => s.user?.id === participantId
       );
-      
+
       userSockets.forEach(userSocket => {
         userSocket.join(`conversation_${conversationId}`);
         console.log(`✅ Auto-joined user ${participantId} to conversation ${conversationId}`);
-        
+
         // Notify user about the new conversation
         userSocket.emit('conversation_joined', {
           conversationId,
@@ -96,7 +96,7 @@ app.post('/conversation-created', (req, res) => {
         });
       });
     });
-    
+
     res.json({ success: true });
   } catch (error) {
     console.error('❌ Error handling conversation_created:', error);
@@ -118,7 +118,7 @@ app.use('/socket-test', socketLimiter);
 app.get('/metrics', (req, res) => {
   // const onlineUsers = Array.from(onlineUsers.keys());
   const onlineUsers = onlineStatusService.getOnlineUsers(); // or similar
-  
+
   res.json({
     uptime: process.uptime(),
     memory: process.memoryUsage(),
@@ -136,47 +136,88 @@ io.use(socketAuth);
 // Socket.io connection handler
 io.on('connection', (socket) => {
   const userId = socket.user?.id;
-  
+
   if (userId) {
     // Track user as online
     const becameOnline = onlineStatusService.userConnected(userId, socket.id);
-    
+
     if (becameOnline) {
       // Notify friends that user came online
       notifyFriendsOnlineStatus(userId, true);
     }
-    
+
     console.log(`🔗 User ${socket.user.username} (ID: ${userId}) connected`);
     console.log(`   Total online users: ${onlineStatusService.getOnlineCount()}`);
   }
 
-  
+
   // Initialize chat handler
   chatHandler(io, socket);
-  
+
   // Handle disconnect
   socket.on('disconnect', () => {
     if (userId) {
       // Track user as offline (if no more sockets)
       const becameOffline = onlineStatusService.userDisconnected(userId, socket.id);
-      
+
       if (becameOffline) {
         // Notify friends that user went offline
         notifyFriendsOnlineStatus(userId, false);
       }
-      
+
       console.log(`👋 User ${socket.user?.username} (ID: ${userId}) disconnected`);
       console.log(`   Remaining online users: ${onlineStatusService.getOnlineCount()}`);
     }
   });
 });
 
-// Helper function to notify friends (you'll implement this later)
-function notifyFriendsOnlineStatus(userId, isOnline) {
-  // Get user's friends from database
-  // For each friend who is online, send WebSocket event
-  console.log(`📢 User ${userId} is now ${isOnline ? 'online' : 'offline'}`);
-}
+
+
+
+// server.js - Update the notifyFriendsOnlineStatus function
+const notifyFriendsOnlineStatus = async (userId, isOnline) => {
+  try {
+    console.log(`📢 User ${userId} is now ${isOnline ? 'online' : 'offline'}`);
+
+    // Get user's friends from database (you'll need to implement this query)
+    // For now, let's broadcast to ALL users for testing
+    const userSockets = Array.from(io.sockets.sockets.values());
+
+    userSockets.forEach(socket => {
+      // Don't notify the user about their own status change
+      if (socket.user?.id !== userId) {
+        socket.emit('user_status_changed', {
+          userId: userId,
+          isOnline: isOnline,
+          timestamp: new Date().toISOString()
+        });
+      }
+    });
+
+    console.log(`📡 Broadcast online status for user ${userId} to ${userSockets.length - 1} other users`);
+  } catch (error) {
+    console.error('❌ Error notifying friends online status:', error);
+  }
+};
+
+
+
+
+
+// Also add this endpoint to get user status
+app.get('/user-status/:userId', (req, res) => {
+  const userId = parseInt(req.params.userId);
+  const isOnline = onlineStatusService.isUserOnline(userId);
+  const lastSeen = onlineStatusService.getUserLastSeen(userId);
+
+  res.json({
+    userId,
+    isOnline,
+    lastSeen,
+    socketCount: onlineStatusService.getUserSockets(userId).length
+  });
+});
+
 
 // Add monitoring endpoint
 app.get('/online-users', (req, res) => {
