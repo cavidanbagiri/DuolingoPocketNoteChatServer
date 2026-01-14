@@ -9,6 +9,9 @@ const chatHandler = (io, socket) => {
   // Store user's socket ID for reference
   const userId = socket.user.id;
 
+  // 🔥 AUTO-JOIN ALL USER'S CONVERSATIONS ---------------------------------------------------- New Added - Auto-join all conversations
+  joinUserToAllConversations(socket, userId);
+
 
   // Send current online status to user
   socket.emit('online_status_update', {
@@ -106,119 +109,150 @@ const chatHandler = (io, socket) => {
   });
 
   // ==================== MESSAGING ====================
-
-
-
-  // CORRECT ORDER - FIXED
-socket.on('send_message', async (data) => {
+  
+  // ------------------------------ New Added ------------------------------
+  socket.on('send_message', async (data) => {
   try {
     const { conversationId, content, messageType = 'text' } = data;
     
-    console.log('💬 User sending message to conversation:', conversationId);
+    console.log(`💬 Message from user ${userId} to conversation ${conversationId}`);
     
-    // 1. Save message to DB
+    // Verify user is participant (security check)
+    const participant = await db.ConversationParticipant.findOne({
+      where: {
+        conversation_id: conversationId,
+        user_id: userId,
+        left_at: null
+      }
+    });
+    
+    if (!participant) {
+      socket.emit('error', { message: 'Not a participant in this conversation' });
+      return;
+    }
+    
+    // Save message to database
     const message = await db.Message.create({
       conversation_id: conversationId,
       sender_id: userId,
       content,
-      message_type: messageType,
-      created_at: new Date()
+      message_type: messageType
     });
     
-    console.log('💾 Message saved to DB, ID:', message.id);
-    
-    // 2. Get all participants
-    const participants = await db.ConversationParticipant.findAll({
-      where: { conversation_id: conversationId }
-    });
-    
-    console.log(`👥 Found ${participants.length} participants`);
-    
-    // 3. Get message with sender info
+    // Get message with sender info (FIXED - using correct column names)
     const messageWithSender = await db.Message.findByPk(message.id, {
       include: [{
         model: db.User,
         as: 'sender',
-        include: [{ model: db.UserProfile, as: 'profile' }]
+        attributes: ['id', 'username'],
+        include: [{ 
+          model: db.UserProfile, 
+          as: 'profile',
+          attributes: [
+            'profile_image_url',  // ✅ Correct column name
+            'first_name', 
+            'last_name',
+            'bio'
+          ]
+        }]
       }]
     });
     
-    // 4. FORCE JOIN all participants to room
-    participants.forEach(participant => {
-      // Find all sockets for this user
-      const userSockets = Array.from(io.sockets.sockets.values()).filter(
-        s => s.user?.id === participant.user_id
-      );
-      
-      userSockets.forEach(userSocket => {
-        const roomName = `conversation_${conversationId}`;
-        if (!userSocket.rooms.has(roomName)) {
-          userSocket.join(roomName);
-          console.log(`✅ Auto-joined user ${participant.user_id} to ${roomName}`);
-        }
-      });
-    });
+    // Update conversation timestamp
+    await db.Conversation.update(
+      { updated_at: new Date() },
+      { where: { id: conversationId } }
+    );
     
-    // 5. Check room members
-    const roomMembers = io.sockets.adapter.rooms.get(`conversation_${conversationId}`);
-    console.log('👥 Room members before broadcast:', roomMembers);
-    
-    // 6. Broadcast to room
+    // 🎯 SIMPLE BROADCAST - users are already in the room!
     io.to(`conversation_${conversationId}`).emit('new_message', {
       conversationId,
       message: messageWithSender
     });
     
-    console.log(`📤 Message broadcast to conversation ${conversationId}`);
+    console.log(`📤 Message ${message.id} broadcast to conversation ${conversationId}`);
     
   } catch (error) {
-    console.error('Send message error:', error);
+    console.error('❌ Send message error:', error);
+    socket.emit('error', { message: 'Failed to send message' });
   }
-});
+  });
+
+  // ------------------------------ New Added ------------------------------
+  // Add this new event handler in chatHandler.js
+  socket.on('conversation_created', async (data) => {
+    try {
+      const { conversationId, participantIds } = data;
+      
+      console.log(`🆕 New conversation ${conversationId} created with participants:`, participantIds);
+      
+      // Auto-join all online participants to the new conversation room
+      participantIds.forEach(participantId => {
+        const userSockets = Array.from(io.sockets.sockets.values()).filter(
+          s => s.user?.id === participantId
+        );
+        
+        userSockets.forEach(userSocket => {
+          userSocket.join(`conversation_${conversationId}`);
+          console.log(`✅ Auto-joined user ${participantId} to conversation ${conversationId}`);
+          
+          // Notify user about the new conversation
+          userSocket.emit('conversation_joined', {
+            conversationId,
+            message: 'You were added to a new conversation'
+          });
+        });
+      });
+      
+    } catch (error) {
+      console.error('❌ Error handling conversation_created:', error);
+    }
+  });
+
 
 
 
   // Join a conversation
-  socket.on('join_conversation', async (data) => {
-    try {
-      const { conversationId } = data;
+  // socket.on('join_conversation', async (data) => {
+  //   try {
+  //     const { conversationId } = data;
 
-      // Verify user is a participant
-      const participant = await db.ConversationParticipant.findOne({
-        where: {
-          conversation_id: conversationId,
-          user_id: userId
-        }
-      });
+  //     // Verify user is a participant
+  //     const participant = await db.ConversationParticipant.findOne({
+  //       where: {
+  //         conversation_id: conversationId,
+  //         user_id: userId
+  //       }
+  //     });
 
-      if (!participant) {
-        socket.emit('error', { message: 'Not a participant in this conversation' });
-        return;
-      }
+  //     if (!participant) {
+  //       socket.emit('error', { message: 'Not a participant in this conversation' });
+  //       return;
+  //     }
 
-      // Join the conversation room
-      socket.join(`conversation_${conversationId}`);
+  //     // Join the conversation room
+  //     socket.join(`conversation_${conversationId}`);
 
-      // Update last read message
-      const lastMessage = await db.Message.findOne({
-        where: { conversation_id: conversationId },
-        order: [['created_at', 'DESC']]
-      });
+  //     // Update last read message
+  //     const lastMessage = await db.Message.findOne({
+  //       where: { conversation_id: conversationId },
+  //       order: [['created_at', 'DESC']]
+  //     });
 
-      if (lastMessage) {
-        await db.ConversationParticipant.update(
-          { last_read_message_id: lastMessage.id },
-          { where: { id: participant.id } }
-        );
-      }
+  //     if (lastMessage) {
+  //       await db.ConversationParticipant.update(
+  //         { last_read_message_id: lastMessage.id },
+  //         { where: { id: participant.id } }
+  //       );
+  //     }
 
-      console.log(`User ${socket.user.username} joined conversation ${conversationId}`);
+  //     console.log(`User ${socket.user.username} joined conversation ${conversationId}`);
 
-    } catch (error) {
-      console.error('Join conversation error:', error);
-      socket.emit('error', { message: 'Failed to join conversation' });
-    }
-  });
+  //   } catch (error) {
+  //     console.error('Join conversation error:', error);
+  //     socket.emit('error', { message: 'Failed to join conversation' });
+  //   }
+  // });
 
   // Send message
   // socket.on('send_message', async (data) => {
@@ -454,6 +488,56 @@ socket.on('send_message', async (data) => {
     }
   });
 
+  
 };
+
+
+// ------------------------------ New Added ------------------------------
+// Add this helper function
+const joinUserToAllConversations = async (socket, userId) => {
+  try {
+    // Get all conversations user participates in
+    const participations = await db.ConversationParticipant.findAll({
+      where: {
+        user_id: userId,
+        left_at: null // Only active participations
+      },
+      include: [{
+        model: db.Conversation,
+        as: 'conversation'
+      }]
+    });
+
+    console.log(`🏠 Auto-joining user ${userId} to ${participations.length} conversations`);
+
+    // Join each conversation room
+    participations.forEach(participation => {
+      const roomName = `conversation_${participation.conversation_id}`;
+      socket.join(roomName);
+      console.log(`   ✅ Joined room: ${roomName}`);
+    });
+
+    // Send conversation list to user
+    socket.emit('conversations_joined', {
+      conversations: participations.map(p => ({
+        id: p.conversation_id,
+        isGroup: p.conversation.is_group,
+        groupName: p.conversation.group_name,
+        lastRead: p.last_read_message_id
+      }))
+    });
+
+  } catch (error) {
+    console.error('❌ Error joining conversations:', error);
+  }
+};
+
+
+
+
+
+
+
+
 
 module.exports = chatHandler;
