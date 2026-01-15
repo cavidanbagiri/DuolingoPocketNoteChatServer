@@ -133,38 +133,39 @@ app.get('/metrics', (req, res) => {
 io.use(socketAuth);
 
 
-// Socket.io connection handler
+// Socket.io connection handler - UPDATE THIS SECTION
 io.on('connection', (socket) => {
   const userId = socket.user?.id;
-
+  
   if (userId) {
     // Track user as online
     const becameOnline = onlineStatusService.userConnected(userId, socket.id);
-
-    if (becameOnline) {
-      // Notify friends that user came online
-      notifyFriendsOnlineStatus(userId, true);
-    }
-
+    
     console.log(`🔗 User ${socket.user.username} (ID: ${userId}) connected`);
     console.log(`   Total online users: ${onlineStatusService.getOnlineCount()}`);
+    
+    // 🔥 STEP 1: Send initial online users to the newly connected user
+    sendInitialOnlineStatusToUser(socket, userId);
+    
+    // 🔥 STEP 2: Notify ALL other users that this user came online
+    if (becameOnline) {
+      notifyFriendsOnlineStatus(userId, true);
+    }
   }
-
 
   // Initialize chat handler
   chatHandler(io, socket);
-
+  
   // Handle disconnect
   socket.on('disconnect', () => {
     if (userId) {
-      // Track user as offline (if no more sockets)
       const becameOffline = onlineStatusService.userDisconnected(userId, socket.id);
-
+      
       if (becameOffline) {
         // Notify friends that user went offline
         notifyFriendsOnlineStatus(userId, false);
       }
-
+      
       console.log(`👋 User ${socket.user?.username} (ID: ${userId}) disconnected`);
       console.log(`   Remaining online users: ${onlineStatusService.getOnlineCount()}`);
     }
@@ -175,30 +176,23 @@ io.on('connection', (socket) => {
 
 
 // server.js - Update the notifyFriendsOnlineStatus function
-const notifyFriendsOnlineStatus = async (userId, isOnline) => {
+function notifyFriendsOnlineStatus(userId, isOnline) {
   try {
     console.log(`📢 User ${userId} is now ${isOnline ? 'online' : 'offline'}`);
-
-    // Get user's friends from database (you'll need to implement this query)
-    // For now, let's broadcast to ALL users for testing
-    const userSockets = Array.from(io.sockets.sockets.values());
-
-    userSockets.forEach(socket => {
-      // Don't notify the user about their own status change
-      if (socket.user?.id !== userId) {
-        socket.emit('user_status_changed', {
-          userId: userId,
-          isOnline: isOnline,
-          timestamp: new Date().toISOString()
-        });
-      }
+    
+    // 🔥 BROADCAST to ALL connected users (for now)
+    // Later you can filter to only friends if you want
+    io.emit('user_status_changed', {
+      userId: userId,
+      isOnline: isOnline,
+      timestamp: new Date().toISOString()
     });
-
-    console.log(`📡 Broadcast online status for user ${userId} to ${userSockets.length - 1} other users`);
+    
+    console.log(`✅ Broadcasted status change for user ${userId}`);
   } catch (error) {
-    console.error('❌ Error notifying friends online status:', error);
+    console.error('❌ Error broadcasting online status:', error);
   }
-};
+}
 
 
 
@@ -233,6 +227,31 @@ app.get('/online-users/:userId', (req, res) => {
     sockets: onlineStatusService.getUserSockets(userId)
   });
 });
+
+// server.js - Add this helper function
+function sendInitialOnlineStatusToUser(socket, userId) {
+  try {
+    const onlineUsers = onlineStatusService.getOnlineUsers();
+    
+    console.log(`📊 Sending initial online status to user ${userId}`);
+    console.log(`   Online users: ${onlineUsers.join(', ')}`);
+    
+    // Send each online user's status (except their own)
+    onlineUsers.forEach(onlineUserId => {
+      if (onlineUserId !== userId) {
+        socket.emit('user_status_changed', {
+          userId: onlineUserId,
+          isOnline: true,
+          timestamp: new Date().toISOString()
+        });
+      }
+    });
+    
+    console.log(`✅ Sent ${onlineUsers.length - 1} initial online statuses`);
+  } catch (error) {
+    console.error('❌ Error sending initial online status:', error);
+  }
+}
 
 
 // Start server
