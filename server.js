@@ -73,36 +73,8 @@ app.get('/socket-test', (req, res) => {
   });
 });
 
-// Add this to your server.js (not chatHandler.js)
-app.post('/conversation-created', (req, res) => {
-  try {
-    const { conversationId, participantIds } = req.body;
 
 
-    // Auto-join all online participants to the new conversation room
-    participantIds.forEach(participantId => {
-      const userSockets = Array.from(io.sockets.sockets.values()).filter(
-        s => s.user?.id === participantId
-      );
-
-      userSockets.forEach(userSocket => {
-        userSocket.join(`conversation_${conversationId}`);
-        console.log(`✅ Auto-joined user ${participantId} to conversation ${conversationId}`);
-
-        // Notify user about the new conversation
-        userSocket.emit('conversation_joined', {
-          conversationId,
-          message: 'You were added to a new conversation'
-        });
-      });
-    });
-
-    res.json({ success: true });
-  } catch (error) {
-    console.error('❌ Error handling conversation_created:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // **** New Added - Limit socket connections
 const socketLimiter = rateLimit({
